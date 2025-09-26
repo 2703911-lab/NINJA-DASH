@@ -1,0 +1,697 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ninja Dash - Browser Game</title>
+    <style>
+        body { margin: 0; padding: 0; background: #222; display: flex; justify-content: center; align-items: center; height: 100vh; font-family: Arial, sans-serif; }
+        canvas { border: 2px solid #fff; background: linear-gradient(to bottom, #87CEEB 0%, #98FB98 100%); cursor: crosshair; }
+        #score { position: absolute; top: 10px; left: 10px; color: white; font-size: 24px; z-index: 10; }
+        #health { position: absolute; top: 10px; right: 10px; color: white; font-size: 24px; z-index: 10; }
+        #weapon { position: absolute; top: 50px; left: 10px; color: yellow; font-size: 18px; z-index: 10; }
+        #armor { position: absolute; top: 70px; left: 10px; color: lightblue; font-size: 18px; z-index: 10; }
+        #instructions { position: absolute; bottom: 10px; left: 10px; color: white; font-size: 14px; z-index: 10; }
+        #winScreen { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: gold; font-size: 48px; z-index: 20; display: none; text-align: center; background: rgba(0,0,0,0.8); padding: 20px; border: 2px solid gold; }
+    </style>
+</head>
+<body>
+    <div id="score">Score: 0</div>
+    <div id="health">Health: 100/100</div>
+    <div id="weapon">Weapon: Katana</div>
+    <div id="armor">Armor: None</div>
+    <div id="instructions">Use A/D to move left/right, SPACE to jump, S to crouch! Left-click to attack (guns aim at mouse; rifle auto-fires). Killing red bots heals +10 HP! Reach 500 for chest! 30000 = WIN! Blue balls: 30 dmg, Red bots: 50 dmg, Gray balls: 20 dmg.</div>
+    <div id="winScreen">
+        <h1>You Win! Nuke Deployed!</h1>
+        <p>Final Score: <span id="finalScore">0</span></p>
+        <button onclick="location.reload()">Play Again</button>
+    </div>
+    <canvas id="gameCanvas" width="800" height="400"></canvas>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreElement = document.getElementById('score');
+        const healthElement = document.getElementById('health');
+        const weaponElement = document.getElementById('weapon');
+        const armorElement = document.getElementById('armor');
+        const winScreen = document.getElementById('winScreen');
+        const finalScoreElement = document.getElementById('finalScore');
+
+        // Mouse position
+        let mouseX = 0;
+        let mouseY = 0;
+        let isMouseDown = false;
+
+        // Game variables
+        let score = 0;
+        let maxHealth = 100;
+        let health = 100;
+        let gameSpeed = 2;
+        let gameRunning = true;
+        let lastScoreTime = Date.now(); // For passive scoring
+        let hasPistol = false;
+        let hasRifle = false;
+        let hasRPG = false;
+        let hasGod = false;
+        let currentWeapon = 'katana'; // 'katana', 'pistol', 'rifle', 'rpg', 'god'
+        let won = false;
+        let infiniteHealth = false;
+        let armor = 0; // Reduces damage by this amount
+        let chestOpened = false;
+        let redKills = 0; // Track for secret
+
+        // Ninja player
+        const ninja = {
+            x: 100,
+            y: 300,
+            width: 40,
+            height: 60,
+            dx: 0,
+            dy: 0,
+            speed: 5,
+            gravity: 0.5,
+            jumpPower: -12,
+            grounded: false,
+            attacking: false,
+            attackCooldown: 0,
+            crouching: false,
+            baseHeight: 60
+        };
+
+        // Projectiles (for guns)
+        let projectiles = [];
+
+        // Ground obstacles (now "balls" that either roll or fly)
+        let groundObstacles = [];
+        let groundObstacleTimer = 0;
+
+        // Mountains/obstacles (static platforms/hills)
+        let mountains = [
+            {x: 200, y: groundY - 50, width: 100, height: 50},
+            {x: 500, y: groundY - 80, width: 150, height: 80},
+            {x: 800, y: groundY - 30, width: 80, height: 30},
+            // More can be added dynamically
+        ];
+
+        // Flying bots (red dots)
+        let flyingBots = [];
+        let botTimer = 0;
+
+        // Chest
+        let chest = null;
+
+        // Ground
+        const groundY = 360;
+
+        // Input
+        let keys = {};
+
+        // Mouse events
+        canvas.addEventListener('mousemove', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            mouseX = e.clientX - rect.left;
+            mouseY = e.clientY - rect.top;
+        });
+
+        canvas.addEventListener('mousedown', (e) => {
+            if (e.button === 0) {
+                isMouseDown = true;
+                if (gameRunning && !won && ninja.attackCooldown <= 0) { // Left click
+                    ninja.attacking = true;
+                    performAttack();
+                }
+            }
+        });
+
+        canvas.addEventListener('mouseup', (e) => {
+            if (e.button === 0) {
+                isMouseDown = false;
+                ninja.attacking = false;
+            }
+        });
+
+        window.addEventListener('keydown', (e) => { keys[e.code] = true; });
+        window.addEventListener('keyup', (e) => { keys[e.code] = false; });
+
+        // Draw ninja (simple stick figure ninja)
+        function drawNinja() {
+            const currentHeight = ninja.crouching ? ninja.baseHeight / 2 : ninja.baseHeight;
+            const offsetY = ninja.crouching ? ninja.baseHeight / 4 : 0;
+
+            ctx.fillStyle = 'black';
+            // Body (adjusted for crouch)
+            ctx.fillRect(ninja.x, ninja.y + 20 + offsetY, ninja.width, currentHeight - 20);
+            // Head
+            ctx.beginPath();
+            ctx.arc(ninja.x + 20, ninja.y + 10, 10, 0, Math.PI * 2);
+            ctx.fill();
+            // Eyes
+            ctx.fillStyle = 'white';
+            ctx.fillRect(ninja.x + 15, ninja.y + 8, 3, 3);
+            ctx.fillRect(ninja.x + 25, ninja.y + 8, 3, 3);
+            // Arms and weapon
+            if (currentWeapon === 'katana') {
+                ctx.strokeStyle = 'gray';
+                ctx.lineWidth = 3;
+                if (ninja.attacking) {
+                    // Swing forward (adjusted for crouch)
+                    ctx.beginPath();
+                    ctx.moveTo(ninja.x + 40, ninja.y + 30 + offsetY);
+                    ctx.lineTo(ninja.x + 80, ninja.y + 10 + offsetY);
+                    ctx.stroke();
+                } else {
+                    // Idle position (adjusted)
+                    ctx.beginPath();
+                    ctx.moveTo(ninja.x + 40, ninja.y + 30 + offsetY);
+                    ctx.lineTo(ninja.x + 60, ninja.y + 20 + offsetY);
+                    ctx.stroke();
+                }
+            } else if (currentWeapon === 'god') {
+                // God weapon: glowing sword
+                ctx.strokeStyle = 'gold';
+                ctx.lineWidth = 5;
+                if (ninja.attacking) {
+                    ctx.beginPath();
+                    ctx.moveTo(ninja.x + 40, ninja.y + 30 + offsetY);
+                    ctx.lineTo(ninja.x + 100, ninja.y + 10 + offsetY);
+                    ctx.stroke();
+                } else {
+                    ctx.beginPath();
+                    ctx.moveTo(ninja.x + 40, ninja.y + 30 + offsetY);
+                    ctx.lineTo(ninja.x + 70, ninja.y + 20 + offsetY);
+                    ctx.stroke();
+                }
+            } else {
+                // Draw gun (simple rectangle)
+                ctx.fillStyle = 'black';
+                ctx.fillRect(ninja.x + 35, ninja.y + 25 + offsetY, 20, 5);
+                if (ninja.attacking) {
+                    // Muzzle flash towards mouse (line to mouse)
+                    ctx.strokeStyle = 'yellow';
+                    ctx.lineWidth = 2;
+                    const gunTipX = ninja.x + 55;
+                    const gunTipY = ninja.y + 27.5 + offsetY;
+                    ctx.beginPath();
+                    ctx.moveTo(gunTipX, gunTipY);
+                    ctx.lineTo(gunTipX + 10 * (mouseX > gunTipX ? 1 : -1), gunTipY + 10 * (mouseY > gunTipY ? 1 : -1));
+                    ctx.stroke();
+                }
+            }
+        }
+
+        // Draw ground obstacle (now ball: circle that "rolls" or "flies")
+        function drawGroundObstacle(obs) {
+            ctx.fillStyle = obs.isFlying ? 'blue' : 'gray'; // Blue for flying, gray for rolling
+            ctx.beginPath();
+            ctx.arc(obs.x + obs.width / 2, obs.y + obs.height / 2, obs.width / 2, 0, Math.PI * 2);
+            ctx.fill();
+            // Simple roll animation (rotation line)
+            if (!obs.isFlying) {
+                ctx.strokeStyle = 'black';
+                ctx.lineWidth = 2;
+                const rotation = (obs.x * 0.1) % (Math.PI * 2); // Pseudo-roll based on position
+                ctx.beginPath();
+                ctx.moveTo(obs.x + obs.width / 2, obs.y + obs.height / 2);
+                ctx.lineTo(
+                    obs.x + obs.width / 2 + Math.cos(rotation) * (obs.width / 2),
+                    obs.y + obs.height / 2 + Math.sin(rotation) * (obs.width / 2)
+                );
+                ctx.stroke();
+            }
+        }
+
+        // Draw mountain/obstacle
+        function drawMountain(mtn) {
+            ctx.fillStyle = 'brown';
+            ctx.fillRect(mtn.x, mtn.y, mtn.width, mtn.height);
+            // Simple triangle top
+            ctx.fillStyle = 'darkgreen';
+            ctx.beginPath();
+            ctx.moveTo(mtn.x, mtn.y);
+            ctx.lineTo(mtn.x + mtn.width / 2, mtn.y - 30);
+            ctx.lineTo(mtn.x + mtn.width, mtn.y);
+            ctx.fill();
+        }
+
+        // Draw flying bot (simple drone-like circle with props)
+        function drawFlyingBot(bot) {
+            // Body
+            ctx.fillStyle = 'red';
+            ctx.beginPath();
+            ctx.arc(bot.x + bot.width / 2, bot.y + bot.height / 2, bot.width / 2, 0, Math.PI * 2);
+            ctx.fill();
+            // "Props" (lines)
+            ctx.strokeStyle = 'black';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(bot.x, bot.y + bot.height / 2);
+            ctx.lineTo(bot.x + bot.width, bot.y + bot.height / 2);
+            ctx.moveTo(bot.x + bot.width / 2, bot.y);
+            ctx.lineTo(bot.x + bot.width / 2, bot.y + bot.height);
+            ctx.stroke();
+        }
+
+        // Draw chest
+        function drawChest() {
+            if (chest) {
+                ctx.fillStyle = 'gold';
+                ctx.fillRect(chest.x, chest.y, chest.width, chest.height);
+                ctx.fillStyle = 'brown';
+                ctx.fillRect(chest.x + 5, chest.y + 5, chest.width - 10, chest.height - 10);
+            }
+        }
+
+        // Draw projectile (bullet)
+        function drawProjectile(proj) {
+            ctx.fillStyle = currentWeapon === 'rpg' ? 'orange' : (currentWeapon === 'god' ? 'gold' : 'yellow');
+            ctx.fillRect(proj.x, proj.y, proj.width, proj.height);
+        }
+
+        // Update ninja
+        function updateNinja() {
+            // Horizontal movement
+            ninja.dx = 0;
+            if (keys['KeyA']) ninja.dx = -ninja.speed;
+            if (keys['KeyD']) ninja.dx = ninja.speed;
+            ninja.x += ninja.dx;
+
+            // Boundaries
+            if (ninja.x < 0) ninja.x = 0;
+            if (ninja.x + ninja.width > canvas.width) ninja.x = canvas.width - ninja.width;
+
+            // Jump (SPACE)
+            if (keys['Space'] && ninja.grounded) {
+                ninja.dy = ninja.jumpPower;
+                ninja.grounded = false;
+            }
+
+            // Crouch
+            if (keys['KeyS']) {
+                ninja.crouching = true;
+            } else {
+                ninja.crouching = false;
+            }
+
+            // Gravity and vertical movement
+            ninja.dy += ninja.gravity;
+            ninja.y += ninja.dy;
+
+            if (ninja.y >= groundY - ninja.baseHeight) {
+                ninja.y = groundY - ninja.baseHeight;
+                ninja.dy = 0;
+                ninja.grounded = true;
+            }
+
+            // Attack cooldown
+            if (ninja.attackCooldown > 0) {
+                ninja.attackCooldown--;
+                if (ninja.attackCooldown <= 0) {
+                    ninja.attacking = false;
+                }
+            }
+        }
+
+        // Update ground obstacles (balls that fly or roll)
+        function updateGroundObstacles() {
+            groundObstacleTimer++;
+            if (groundObstacleTimer > 200 / gameSpeed) {
+                const isFlying = Math.random() < 0.5; // 50% chance to fly
+                const obsY = isFlying ? groundY - 100 : groundY - 30; // Fly higher or roll low
+                groundObstacles.push({
+                    x: canvas.width,
+                    y: obsY,
+                    width: 30,
+                    height: 30,
+                    isFlying: isFlying
+                });
+                groundObstacleTimer = 0;
+            }
+
+            for (let i = groundObstacles.length - 1; i >= 0; i--) {
+                groundObstacles[i].x -= gameSpeed;
+                if (groundObstacles[i].x + groundObstacles[i].width < 0) {
+                    groundObstacles.splice(i, 1);
+                    // No score for passing ground obstacles
+                }
+            }
+        }
+
+        // Update mountains (static, but world scrolls - add new ones occasionally)
+        function updateMountains() {
+            // Add new mountain occasionally
+            if (Math.random() < 0.005) {
+                mountains.push({
+                    x: canvas.width,
+                    y: groundY - Math.random() * 50 - 30,
+                    width: 80 + Math.random() * 70,
+                    height: 30 + Math.random() * 50
+                });
+            }
+
+            for (let i = mountains.length - 1; i >= 0; i--) {
+                mountains[i].x -= gameSpeed;
+                if (mountains[i].x + mountains[i].width < 0) {
+                    mountains.splice(i, 1);
+                }
+            }
+        }
+
+        // Update flying bots
+        function updateFlyingBots() {
+            botTimer++;
+            if (botTimer > 150 / gameSpeed) { // Spawn every ~150 frames, adjustable
+                const flyHeight = Math.random() * (groundY - 100) + 50; // Random height
+                flyingBots.push({
+                    x: canvas.width,
+                    y: flyHeight - 20,
+                    width: 40, // Visual size unchanged
+                    height: 40, // Visual size unchanged
+                    speed: gameSpeed + 1, // Slightly faster than ground
+                    health: hasGod ? 1 : (currentWeapon === 'rpg' ? 1 : 1) // God one-shots
+                });
+                botTimer = 0;
+            }
+
+            for (let i = flyingBots.length - 1; i >= 0; i--) {
+                flyingBots[i].x -= flyingBots[i].speed;
+                if (flyingBots[i].x + flyingBots[i].width < 0) {
+                    flyingBots.splice(i, 1);
+                    // No score for passing bots - only for kills
+                }
+            }
+        }
+
+        // Update projectiles (now with direction)
+        function updateProjectiles() {
+            for (let i = projectiles.length - 1; i >= 0; i--) {
+                const proj = projectiles[i];
+                proj.x += proj.vx;
+                proj.y += proj.vy;
+                if (proj.x < 0 || proj.x > canvas.width || proj.y < 0 || proj.y > canvas.height) {
+                    projectiles.splice(i, 1);
+                    continue;
+                }
+                // Check hits with larger kill box (add padding)
+                for (let j = flyingBots.length - 1; j >= 0; j--) {
+                    const bot = flyingBots[j];
+                    const padding = 20; // Larger kill box padding
+                    if (proj.x < bot.x + bot.width + padding &&
+                        proj.x + proj.width > bot.x - padding &&
+                        proj.y < bot.y + bot.height + padding &&
+                        proj.y + proj.height > bot.y - padding) {
+                        // Hit!
+                        redKills++;
+                        checkGodDrop();
+                        if (currentWeapon === 'rpg') {
+                            // Explode: Damage nearby bots
+                            for (let k = flyingBots.length - 1; k >= 0; k--) {
+                                const nearby = flyingBots[k];
+                                const dist = Math.sqrt(Math.pow(proj.x - nearby.x, 2) + Math.pow(proj.y - nearby.y, 2));
+                                if (dist < 60) {
+                                    redKills++;
+                                    checkGodDrop();
+                                    flyingBots.splice(k, 1);
+                                    score += 300;
+                                    health = Math.min(health + 10, maxHealth); // Heal +10 on kill
+                                }
+                            }
+                        } else {
+                            flyingBots.splice(j, 1);
+                            score += 300;
+                            health = Math.min(health + 10, maxHealth); // Heal +10 on kill
+                        }
+                        projectiles.splice(i, 1);
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Passive score every 5 seconds
+        function updatePassiveScore() {
+            const currentTime = Date.now();
+            if (currentTime - lastScoreTime >= 5000) { // 5 seconds
+                score += 50;
+                lastScoreTime = currentTime;
+                checkMilestones();
+            }
+        }
+
+        // Check score milestones
+        function checkMilestones() {
+            if (score >= 500 && !chestOpened) {
+                spawnChest();
+                chestOpened = true;
+            }
+            if (score >= 1000 && !hasPistol) {
+                hasPistol = true;
+                currentWeapon = 'pistol';
+                alert('Unlocked Pistol!');
+            } else if (score >= 5000 && !hasRifle) {
+                hasRifle = true;
+                currentWeapon = 'rifle';
+                alert('Unlocked Rifle!');
+            } else if (score >= 10000 && !hasRPG) {
+                hasRPG = true;
+                currentWeapon = 'rpg';
+                alert('Unlocked RPG!');
+            } else if (score >= 30000 && !won) {
+                triggerNuke();
+            }
+        }
+
+        // Spawn chest
+        function spawnChest() {
+            chest = {
+                x: canvas.width / 2,
+                y: groundY - 40,
+                width: 40,
+                height: 40,
+                opened: false
+            };
+        }
+
+        // Open chest on collision
+        function checkChest() {
+            if (chest && !chest.opened) {
+                const currentHeight = ninja.crouching ? ninja.baseHeight / 2 : ninja.baseHeight;
+                if (ninja.x < chest.x + chest.width &&
+                    ninja.x + ninja.width > chest.x &&
+                    ninja.y < chest.y + chest.height &&
+                    ninja.y + currentHeight > chest.y) {
+                    chest.opened = true;
+                    const rand = Math.random();
+                    if (rand < 0.001) { // 0.1%
+                        infiniteHealth = true;
+                        alert('Infinite Health Unlocked!');
+                    } else { // 99.9%
+                        armor += 10; // Increase armor
+                        alert('Armor +10!');
+                    }
+                }
+            }
+        }
+
+        // Check for god drop on red kill
+        function checkGodDrop() {
+            if (!hasGod && Math.random() < 0.001) { // 0.1% chance
+                hasGod = true;
+                currentWeapon = 'god';
+                alert('Secret God Weapon Unlocked! Infinite Damage!');
+            }
+        }
+
+        // Auto-fire for rifle
+        function autoFire() {
+            if (currentWeapon === 'rifle' && isMouseDown && ninja.attackCooldown <= 0 && gameRunning && !won) {
+                ninja.attacking = true;
+                shootProjectile(); // Direct shoot for rifle
+                ninja.attackCooldown = 5; // Faster fire rate for auto
+            }
+        }
+
+        // Perform attack based on weapon
+        function performAttack() {
+            if (currentWeapon === 'katana') {
+                meleeAttack();
+                ninja.attackCooldown = 20; // Katana cooldown
+            } else if (currentWeapon === 'pistol' || currentWeapon === 'rpg') {
+                shootProjectile();
+                ninja.attackCooldown = 10; // Single-shot cooldown
+            }
+            // Rifle handled in autoFire
+        }
+
+        // Melee attack (katana or god)
+        function meleeAttack() {
+            const attackRange = hasGod ? 200 : 150; // God has bigger range
+            const verticalTolerance = hasGod ? 100 : 70;
+            for (let i = flyingBots.length - 1; i >= 0; i--) {
+                const bot = flyingBots[i];
+                const distX = bot.x - (ninja.x + ninja.width);
+                const distY = Math.abs(bot.y - (ninja.y + 30));
+                if (distX > 0 && distX < attackRange && distY < verticalTolerance) {
+                    redKills++;
+                    checkGodDrop();
+                    flyingBots.splice(i, 1);
+                    score += 300;
+                    health = Math.min(health + 10, maxHealth); // Heal +10 on kill
+                    checkMilestones();
+                    break;
+                }
+            }
+        }
+
+        // Shoot projectile towards mouse
+        function shootProjectile() {
+            const offsetY = ninja.crouching ? ninja.baseHeight / 4 : 0;
+            const gunX = ninja.x + 55; // Gun tip
+            const gunY = ninja.y + 27.5 + offsetY;
+
+            const dx = mouseX - gunX;
+            const dy = mouseY - gunY;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+            const speed = currentWeapon === 'rpg' ? 8 : (hasGod ? 20 : 12);
+            const vx = (dx / distance) * speed;
+            const vy = (dy / distance) * speed;
+
+            const projWidth = currentWeapon === 'rpg' ? 10 : (hasGod ? 15 : 5);
+            const projHeight = currentWeapon === 'rpg' ? 10 : (hasGod ? 15 : 5);
+            projectiles.push({
+                x: gunX,
+                y: gunY,
+                width: projWidth,
+                height: projHeight,
+                vx: vx,
+                vy: vy
+            });
+        }
+
+        // Collision detection (ground obstacles and bots with player)
+        function checkCollisions() {
+            const currentHeight = ninja.crouching ? ninja.baseHeight / 2 : ninja.baseHeight;
+            const currentBottom = ninja.y + currentHeight;
+
+            // Ground obstacles
+            for (let i = groundObstacles.length - 1; i >= 0; i--) {
+                const obs = groundObstacles[i];
+                if (ninja.x < obs.x + obs.width &&
+                    ninja.x + ninja.width > obs.x &&
+                    ninja.y < obs.y + obs.height &&
+                    currentBottom > obs.y) {
+                    let damage = obs.isFlying ? 30 : 20; // Blue (flying): 30, Gray (rolling): 20
+                    damage = Math.max(0, damage - armor); // Armor reduces damage
+                    if (!infiniteHealth) health -= damage;
+                    groundObstacles.splice(i, 1); // Remove on hit
+                    if (health <= 0 && !won) {
+                        endGame();
+                    }
+                }
+            }
+            // Flying bots
+            for (let i = flyingBots.length - 1; i >= 0; i--) {
+                const bot = flyingBots[i];
+                if (ninja.x < bot.x + bot.width &&
+                    ninja.x + ninja.width > bot.x &&
+                    ninja.y < bot.y + bot.height &&
+                    currentBottom > bot.y) {
+                    let damage = 50; // Red: 50 dmg
+                    damage = Math.max(0, damage - armor); // Armor reduces damage
+                    if (!infiniteHealth) health -= damage;
+                    flyingBots.splice(i, 1); // Remove on hit
+                    if (health <= 0 && !won) {
+                        endGame();
+                    }
+                }
+            }
+
+            // Mountains (jump over or collide)
+            for (let mtn of mountains) {
+                if (ninja.x < mtn.x + mtn.width &&
+                    ninja.x + ninja.width > mtn.x &&
+                    ninja.y < mtn.y + mtn.height &&
+                    currentBottom > mtn.y) {
+                    // Simple collision: push up if on top, damage if inside
+                    if (ninja.dy > 0 && ninja.y + currentHeight <= mtn.y + 5) {
+                        ninja.y = mtn.y - currentHeight;
+                        ninja.dy = 0;
+                        ninja.grounded = true;
+                    } else {
+                        let damage = 15; // Mountain bump damage
+                        damage = Math.max(0, damage - armor);
+                        if (!infiniteHealth) health -= damage;
+                        if (health <= 0 && !won) endGame();
+                    }
+                }
+            }
+        }
+
+        // Trigger nuke win
+        function triggerNuke() {
+            won = true;
+            gameRunning = false;
+            // Simple explosion effect: flash screen
+            ctx.fillStyle = 'red';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            setTimeout(() => {
+                ctx.fillStyle = 'white';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                setTimeout(() => {
+                    winScreen.style.display = 'block';
+                    finalScoreElement.textContent = Math.floor(score);
+                }, 500);
+            }, 1000);
+        }
+
+        function endGame() {
+            gameRunning = false;
+            alert(`Game Over! Final Score: ${score}`);
+            location.reload(); // Restart
+        }
+
+        // Draw ground
+        function drawGround() {
+            ctx.fillStyle = 'brown';
+            ctx.fillRect(0, groundY, canvas.width, canvas.height - groundY);
+        }
+
+        // Game loop
+        function gameLoop() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            if (gameRunning && !won) {
+                updateNinja();
+                updateGroundObstacles();
+                updateFlyingBots();
+                updateProjectiles();
+                updateMountains();
+                updatePassiveScore();
+                checkMilestones();
+                checkCollisions();
+                checkChest();
+                autoFire(); // Check for auto-fire
+
+                drawGround();
+                mountains.forEach(drawMountain);
+                drawNinja();
+                groundObstacles.forEach(drawGroundObstacle);
+                flyingBots.forEach(drawFlyingBot);
+                drawChest();
+                projectiles.forEach(drawProjectile);
+
+                gameSpeed += 0.001; // Gradually increase difficulty
+            }
+
+            scoreElement.textContent = `Score: ${Math.floor(score)}`;
+            healthElement.textContent = `Health: ${Math.floor(health)}/100`;
+            weaponElement.textContent = `Weapon: ${currentWeapon.charAt(0).toUpperCase() + currentWeapon.slice(1)}`;
+            armorElement.textContent = `Armor: ${armor}`;
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        gameLoop();
+    </script>
+</body>
+</html>
