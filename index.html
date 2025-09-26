@@ -20,7 +20,7 @@
     <div id="health">Health: 100/100</div>
     <div id="weapon">Weapon: Katana</div>
     <div id="armor">Armor: None</div>
-    <div id="instructions">Use A/D to move left/right, SPACE to jump, S to crouch! Left-click to attack (guns aim at mouse; rifle auto-fires). Killing red bots heals +10 HP! Reach 500 for chest! 30000 = WIN! Blue balls: 30 dmg, Red bots: 50 dmg, Gray balls: 20 dmg.</div>
+    <div id="instructions">Use A/D to move left/right, SPACE to jump, S to crouch! Left-click to attack (guns aim at mouse; rifle auto-fires). Killing red bots heals +10 HP! Collect chests for loot! 30000 = WIN! Blue balls: 30 dmg, Red bots: 50 dmg, Gray balls: 20 dmg.</div>
     <div id="winScreen">
         <h1>You Win! Nuke Deployed!</h1>
         <p>Final Score: <span id="finalScore">0</span></p>
@@ -58,8 +58,10 @@
         let won = false;
         let infiniteHealth = false;
         let armor = 0; // Reduces damage by this amount
-        let chestOpened = false;
         let redKills = 0; // Track for secret
+        let chestThresholds = [500, 5000, 7500, 10000, 15000, 20000, 25000]; // Respawn points
+        let nextChestIndex = 0;
+        let chest = null;
 
         // Ninja player
         const ninja = {
@@ -86,20 +88,9 @@
         let groundObstacles = [];
         let groundObstacleTimer = 0;
 
-        // Mountains/obstacles (static platforms/hills)
-        let mountains = [
-            {x: 200, y: groundY - 50, width: 100, height: 50},
-            {x: 500, y: groundY - 80, width: 150, height: 80},
-            {x: 800, y: groundY - 30, width: 80, height: 30},
-            // More can be added dynamically
-        ];
-
         // Flying bots (red dots)
         let flyingBots = [];
         let botTimer = 0;
-
-        // Chest
-        let chest = null;
 
         // Ground
         const groundY = 360;
@@ -117,7 +108,7 @@
         canvas.addEventListener('mousedown', (e) => {
             if (e.button === 0) {
                 isMouseDown = true;
-                if (gameRunning && !won && ninja.attackCooldown <= 0) { // Left click
+                if (gameRunning && !won && currentWeapon !== 'rifle' && ninja.attackCooldown <= 0) { // Skip for rifle
                     ninja.attacking = true;
                     performAttack();
                 }
@@ -219,19 +210,6 @@
                 );
                 ctx.stroke();
             }
-        }
-
-        // Draw mountain/obstacle
-        function drawMountain(mtn) {
-            ctx.fillStyle = 'brown';
-            ctx.fillRect(mtn.x, mtn.y, mtn.width, mtn.height);
-            // Simple triangle top
-            ctx.fillStyle = 'darkgreen';
-            ctx.beginPath();
-            ctx.moveTo(mtn.x, mtn.y);
-            ctx.lineTo(mtn.x + mtn.width / 2, mtn.y - 30);
-            ctx.lineTo(mtn.x + mtn.width, mtn.y);
-            ctx.fill();
         }
 
         // Draw flying bot (simple drone-like circle with props)
@@ -337,26 +315,6 @@
             }
         }
 
-        // Update mountains (static, but world scrolls - add new ones occasionally)
-        function updateMountains() {
-            // Add new mountain occasionally
-            if (Math.random() < 0.005) {
-                mountains.push({
-                    x: canvas.width,
-                    y: groundY - Math.random() * 50 - 30,
-                    width: 80 + Math.random() * 70,
-                    height: 30 + Math.random() * 50
-                });
-            }
-
-            for (let i = mountains.length - 1; i >= 0; i--) {
-                mountains[i].x -= gameSpeed;
-                if (mountains[i].x + mountains[i].width < 0) {
-                    mountains.splice(i, 1);
-                }
-            }
-        }
-
         // Update flying bots
         function updateFlyingBots() {
             botTimer++;
@@ -422,6 +380,7 @@
                             health = Math.min(health + 10, maxHealth); // Heal +10 on kill
                         }
                         projectiles.splice(i, 1);
+                        checkMilestones();
                         break;
                     }
                 }
@@ -440,9 +399,11 @@
 
         // Check score milestones
         function checkMilestones() {
-            if (score >= 500 && !chestOpened) {
-                spawnChest();
-                chestOpened = true;
+            while (nextChestIndex < chestThresholds.length && score >= chestThresholds[nextChestIndex]) {
+                if (!chest) {
+                    spawnChest();
+                }
+                nextChestIndex++;
             }
             if (score >= 1000 && !hasPistol) {
                 hasPistol = true;
@@ -489,6 +450,7 @@
                         armor += 10; // Increase armor
                         alert('Armor +10!');
                     }
+                    chest = null; // Disappear
                 }
             }
         }
@@ -508,6 +470,7 @@
                 ninja.attacking = true;
                 shootProjectile(); // Direct shoot for rifle
                 ninja.attackCooldown = 5; // Faster fire rate for auto
+                checkMilestones(); // Check after potential score gain
             }
         }
 
@@ -605,26 +568,6 @@
                     }
                 }
             }
-
-            // Mountains (jump over or collide)
-            for (let mtn of mountains) {
-                if (ninja.x < mtn.x + mtn.width &&
-                    ninja.x + ninja.width > mtn.x &&
-                    ninja.y < mtn.y + mtn.height &&
-                    currentBottom > mtn.y) {
-                    // Simple collision: push up if on top, damage if inside
-                    if (ninja.dy > 0 && ninja.y + currentHeight <= mtn.y + 5) {
-                        ninja.y = mtn.y - currentHeight;
-                        ninja.dy = 0;
-                        ninja.grounded = true;
-                    } else {
-                        let damage = 15; // Mountain bump damage
-                        damage = Math.max(0, damage - armor);
-                        if (!infiniteHealth) health -= damage;
-                        if (health <= 0 && !won) endGame();
-                    }
-                }
-            }
         }
 
         // Trigger nuke win
@@ -665,7 +608,6 @@
                 updateGroundObstacles();
                 updateFlyingBots();
                 updateProjectiles();
-                updateMountains();
                 updatePassiveScore();
                 checkMilestones();
                 checkCollisions();
@@ -673,7 +615,6 @@
                 autoFire(); // Check for auto-fire
 
                 drawGround();
-                mountains.forEach(drawMountain);
                 drawNinja();
                 groundObstacles.forEach(drawGroundObstacle);
                 flyingBots.forEach(drawFlyingBot);
