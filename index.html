@@ -13,6 +13,7 @@
         #armor { position: absolute; top: 70px; left: 10px; color: lightblue; font-size: 18px; z-index: 10; }
         #instructions { position: absolute; bottom: 10px; left: 10px; color: white; font-size: 14px; z-index: 10; }
         #winScreen { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: gold; font-size: 48px; z-index: 20; display: none; text-align: center; background: rgba(0,0,0,0.8); padding: 20px; border: 2px solid gold; }
+        #pauseScreen { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: white; font-size: 32px; z-index: 20; display: none; text-align: center; background: rgba(0,0,0,0.8); padding: 20px; border: 2px solid white; }
     </style>
 </head>
 <body>
@@ -20,11 +21,15 @@
     <div id="health">Health: 100/100</div>
     <div id="weapon">Weapon: Katana</div>
     <div id="armor">Armor: None</div>
-    <div id="instructions">Use A/D to move left/right, SPACE to jump, S to crouch! Left-click to attack (guns aim at mouse; rifle auto-fires). Killing red bots heals +10 HP! Collect chests for loot! 30000 = WIN! Blue balls: 30 dmg, Red bots: 50 dmg, Gray balls: 20 dmg.</div>
+    <div id="instructions">Use A/D to move left/right, SPACE to jump (double jump available), SHIFT to dash, S to crouch! Left-click to attack (guns aim at mouse; LMG auto-fires). Killing red bots heals +10 HP! Collect chests for loot! 500000 = NUKE! Blue balls: 30 dmg, Red bots: 50 dmg, Gray balls: 20 dmg. Press P to pause.</div>
     <div id="winScreen">
         <h1>You Win! Nuke Deployed!</h1>
         <p>Final Score: <span id="finalScore">0</span></p>
         <button onclick="location.reload()">Play Again</button>
+    </div>
+    <div id="pauseScreen">
+        <h1>Paused</h1>
+        <p>Press P to resume</p>
     </div>
     <canvas id="gameCanvas" width="800" height="400"></canvas>
 
@@ -37,6 +42,30 @@
         const armorElement = document.getElementById('armor');
         const winScreen = document.getElementById('winScreen');
         const finalScoreElement = document.getElementById('finalScore');
+        const pauseScreen = document.getElementById('pauseScreen');
+
+        // Constants
+        const GROUND_Y = 360;
+        const GRAVITY = 0.5;
+        const JUMP_POWER = -12;
+        const DASH_SPEED = 20;
+        const PASSIVE_SCORE_INTERVAL = 10000; // 10 seconds
+        const PASSIVE_SCORE_AMOUNT = 1000;
+        const KILL_SCORE = 500;
+        const KILL_HEAL = 10;
+        const GOD_DROP_CHANCE = 0.001;
+        const NUKE_SCORE = 500000;
+        const PISTOL_UNLOCK = 7500;
+        const LMG_UNLOCK = 15000;
+        const RPG_UNLOCK = 30000;
+        const CHEST_THRESHOLDS = [500, 5000, 7500, 10000, 15000, 20000, 25000, 30000, 35000, 40000]; // More chests
+
+        // Sounds (replace with actual URLs or local files)
+        const jumpSound = new Audio('https://assets.mixkit.co/sfx/preview/mixkit-game-jump-1105.mp3');
+        const attackSound = new Audio('https://assets.mixkit.co/sfx/preview/mixkit-sword-slash-whoosh-1486.mp3');
+        const hitSound = new Audio('https://assets.mixkit.co/sfx/preview/mixkit-arcade-retro-game-over-213.mp3');
+        const explosionSound = new Audio('https://assets.mixkit.co/sfx/preview/mixkit-arcade-explosion-1698.mp3');
+        const collectSound = new Audio('https://assets.mixkit.co/sfx/preview/mixkit-coin-win-notification-945.mp3');
 
         // Mouse position
         let mouseX = 0;
@@ -49,56 +78,47 @@
         let health = 100;
         let gameSpeed = 2;
         let gameRunning = true;
-        let lastScoreTime = Date.now(); // For passive scoring
+        let paused = false;
+        let lastScoreTime = Date.now();
         let hasPistol = false;
-        let hasRifle = false;
-        let hasRPG = false;
+        let hasLmg = false;
+        let hasRpg = false;
         let hasGod = false;
-        let currentWeapon = 'katana'; // 'katana', 'pistol', 'rifle', 'rpg', 'god'
+        let currentWeapon = 'katana'; // 'katana', 'pistol', 'lmg', 'rpg', 'god'
         let won = false;
         let infiniteHealth = false;
-        let armor = 0; // Reduces damage by this amount
-        let redKills = 0; // Track for secret
-        let chestThresholds = [500, 5000, 7500, 10000, 15000, 20000, 25000]; // Respawn points
+        let armor = 0;
+        let redKills = 0;
         let nextChestIndex = 0;
         let chest = null;
+        let doubleJumpAvailable = true;
 
-        // Ninja player
-        const ninja = {
-            x: 100,
-            y: 300,
-            width: 40,
-            height: 60,
-            dx: 0,
-            dy: 0,
-            speed: 5,
-            gravity: 0.5,
-            jumpPower: -12,
-            grounded: false,
-            attacking: false,
-            attackCooldown: 0,
-            crouching: false,
-            baseHeight: 60
-        };
-
-        // Projectiles (for guns)
+        // Projectiles
         let projectiles = [];
 
-        // Ground obstacles (now "balls" that either roll or fly)
+        // Obstacles
         let groundObstacles = [];
         let groundObstacleTimer = 0;
 
-        // Flying bots (red dots)
+        // Bots
         let flyingBots = [];
         let botTimer = 0;
 
-        // Ground
-        const groundY = 360;
+        // Particles
+        let particles = [];
+
+        // Parallax layers (simple drawn)
+        const parallaxLayers = [
+            { speed: 0.2, color: '#ADD8E6', type: 'clouds' }, // Far
+            { speed: 0.5, color: '#228B22', type: 'trees' }, // Mid
+            { speed: 1, color: '#556B2F', type: 'grass' } // Near
+        ];
+        let bgOffset = 0;
 
         // Input
         let keys = {};
 
-        // Mouse events
+        // Events
         canvas.addEventListener('mousemove', (e) => {
             const rect = canvas.getBoundingClientRect();
             mouseX = e.clientX - rect.left;
@@ -108,10 +128,6 @@
         canvas.addEventListener('mousedown', (e) => {
             if (e.button === 0) {
                 isMouseDown = true;
-                if (gameRunning && !won && currentWeapon !== 'rifle' && ninja.attackCooldown <= 0) { // Skip for rifle
-                    ninja.attacking = true;
-                    performAttack();
-                }
             }
         });
 
@@ -122,16 +138,91 @@
             }
         });
 
-        window.addEventListener('keydown', (e) => { keys[e.code] = true; });
+        window.addEventListener('keydown', (e) => {
+            keys[e.code] = true;
+            if (e.code === 'KeyP') {
+                togglePause();
+            }
+            if (e.code === 'Digit1') switchWeapon('katana');
+            if (e.code === 'Digit2' && hasPistol) switchWeapon('pistol');
+            if (e.code === 'Digit3' && hasLmg) switchWeapon('lmg');
+            if (e.code === 'Digit4' && hasRpg) switchWeapon('rpg');
+            if (e.code === 'Digit5' && hasGod) switchWeapon('god');
+        });
+
         window.addEventListener('keyup', (e) => { keys[e.code] = false; });
 
-        // Draw ninja (simple stick figure ninja)
+        // Toggle pause
+        function togglePause() {
+            paused = !paused;
+            pauseScreen.style.display = paused ? 'block' : 'none';
+        }
+
+        // Switch weapon
+        function switchWeapon(weapon) {
+            if (gameRunning && !paused) {
+                currentWeapon = weapon;
+                updateUI();
+            }
+        }
+
+        // Draw parallax background
+        function drawParallax() {
+            parallaxLayers.forEach((layer, index) => {
+                const offset = bgOffset * layer.speed % canvas.width;
+                ctx.fillStyle = layer.color;
+                ctx.fillRect(-offset, 0, canvas.width, GROUND_Y);
+                ctx.fillRect(canvas.width - offset, 0, canvas.width, GROUND_Y); // Repeat
+
+                // Simple shapes for type
+                if (layer.type === 'clouds') {
+                    drawCloud(-offset + 100, 50, 100);
+                    drawCloud(canvas.width - offset + 200, 80, 150);
+                } else if (layer.type === 'trees') {
+                    drawTree(-offset + 300, GROUND_Y - 150, 50, 150);
+                    drawTree(canvas.width - offset + 400, GROUND_Y - 120, 40, 120);
+                } else if (layer.type === 'grass') {
+                    drawGrass(-offset, GROUND_Y - 20, canvas.width * 2);
+                }
+            });
+            bgOffset += gameSpeed * 0.1; // Scroll with game
+        }
+
+        function drawCloud(x, y, size) {
+            ctx.fillStyle = '#FFF';
+            ctx.beginPath();
+            ctx.arc(x, y, size / 2, 0, Math.PI * 2);
+            ctx.arc(x + size / 2, y, size / 3, 0, Math.PI * 2);
+            ctx.arc(x - size / 2, y, size / 3, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        function drawTree(x, y, width, height) {
+            ctx.fillStyle = '#8B4513'; // Trunk
+            ctx.fillRect(x - width / 4, y, width / 2, height);
+            ctx.fillStyle = '#228B22'; // Leaves
+            ctx.beginPath();
+            ctx.arc(x, y - height / 2, width, 0, Math.PI * 2);
+            ctx.arc(x - width / 2, y - height / 3, width / 2, 0, Math.PI * 2);
+            ctx.arc(x + width / 2, y - height / 3, width / 2, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        function drawGrass(x, y, length) {
+            ctx.fillStyle = '#32CD32';
+            for (let i = 0; i < length; i += 10) {
+                ctx.fillRect(x + i, y, 5, 20);
+            }
+        }
+
+        // Draw ninja with simple animation
         function drawNinja() {
             const currentHeight = ninja.crouching ? ninja.baseHeight / 2 : ninja.baseHeight;
             const offsetY = ninja.crouching ? ninja.baseHeight / 4 : 0;
+            const frame = Math.floor(Date.now() / 100 % 4); // Simple 4-frame animation
 
             ctx.fillStyle = 'black';
-            // Body (adjusted for crouch)
+            // Body
             ctx.fillRect(ninja.x, ninja.y + 20 + offsetY, ninja.width, currentHeight - 20);
             // Head
             ctx.beginPath();
@@ -141,85 +232,75 @@
             ctx.fillStyle = 'white';
             ctx.fillRect(ninja.x + 15, ninja.y + 8, 3, 3);
             ctx.fillRect(ninja.x + 25, ninja.y + 8, 3, 3);
-            // Arms and weapon
-            if (currentWeapon === 'katana') {
-                ctx.strokeStyle = 'gray';
-                ctx.lineWidth = 3;
-                if (ninja.attacking) {
-                    // Swing forward (adjusted for crouch)
-                    ctx.beginPath();
-                    ctx.moveTo(ninja.x + 40, ninja.y + 30 + offsetY);
-                    ctx.lineTo(ninja.x + 80, ninja.y + 10 + offsetY);
-                    ctx.stroke();
-                } else {
-                    // Idle position (adjusted)
-                    ctx.beginPath();
-                    ctx.moveTo(ninja.x + 40, ninja.y + 30 + offsetY);
-                    ctx.lineTo(ninja.x + 60, ninja.y + 20 + offsetY);
-                    ctx.stroke();
-                }
-            } else if (currentWeapon === 'god') {
-                // God weapon: glowing sword
-                ctx.strokeStyle = 'gold';
-                ctx.lineWidth = 5;
+            // Legs animation if moving
+            if (ninja.dx !== 0 && ninja.grounded) {
+                ctx.fillStyle = 'black';
+                ctx.fillRect(ninja.x + 5, ninja.y + currentHeight, 10, 10 + Math.sin(frame * Math.PI) * 5);
+                ctx.fillRect(ninja.x + 25, ninja.y + currentHeight, 10, 10 - Math.sin(frame * Math.PI) * 5);
+            }
+            // Weapon
+            drawWeapon(offsetY);
+        }
+
+        function drawWeapon(offsetY) {
+            if (currentWeapon === 'katana' || currentWeapon === 'god') {
+                ctx.strokeStyle = currentWeapon === 'god' ? 'gold' : 'gray';
+                ctx.lineWidth = currentWeapon === 'god' ? 5 : 3;
                 if (ninja.attacking) {
                     ctx.beginPath();
                     ctx.moveTo(ninja.x + 40, ninja.y + 30 + offsetY);
-                    ctx.lineTo(ninja.x + 100, ninja.y + 10 + offsetY);
+                    ctx.lineTo(ninja.x + (currentWeapon === 'god' ? 100 : 80), ninja.y + 10 + offsetY);
                     ctx.stroke();
                 } else {
                     ctx.beginPath();
                     ctx.moveTo(ninja.x + 40, ninja.y + 30 + offsetY);
-                    ctx.lineTo(ninja.x + 70, ninja.y + 20 + offsetY);
+                    ctx.lineTo(ninja.x + (currentWeapon === 'god' ? 70 : 60), ninja.y + 20 + offsetY);
                     ctx.stroke();
                 }
             } else {
-                // Draw gun (simple rectangle)
+                // Gun
                 ctx.fillStyle = 'black';
                 ctx.fillRect(ninja.x + 35, ninja.y + 25 + offsetY, 20, 5);
                 if (ninja.attacking) {
-                    // Muzzle flash towards mouse (line to mouse)
                     ctx.strokeStyle = 'yellow';
                     ctx.lineWidth = 2;
                     const gunTipX = ninja.x + 55;
                     const gunTipY = ninja.y + 27.5 + offsetY;
                     ctx.beginPath();
                     ctx.moveTo(gunTipX, gunTipY);
-                    ctx.lineTo(gunTipX + 10 * (mouseX > gunTipX ? 1 : -1), gunTipY + 10 * (mouseY > gunTipY ? 1 : -1));
+                    ctx.lineTo(mouseX, mouseY);
                     ctx.stroke();
                 }
             }
         }
 
-        // Draw ground obstacle (now ball: circle that "rolls" or "flies")
+        // Draw ground obstacle
         function drawGroundObstacle(obs) {
-            ctx.fillStyle = obs.isFlying ? 'blue' : 'gray'; // Blue for flying, gray for rolling
+            ctx.fillStyle = obs.isFlying ? 'blue' : 'gray';
             ctx.beginPath();
             ctx.arc(obs.x + obs.width / 2, obs.y + obs.height / 2, obs.width / 2, 0, Math.PI * 2);
             ctx.fill();
-            // Simple roll animation (rotation line)
-            if (!obs.isFlying) {
-                ctx.strokeStyle = 'black';
-                ctx.lineWidth = 2;
-                const rotation = (obs.x * 0.1) % (Math.PI * 2); // Pseudo-roll based on position
-                ctx.beginPath();
-                ctx.moveTo(obs.x + obs.width / 2, obs.y + obs.height / 2);
-                ctx.lineTo(
-                    obs.x + obs.width / 2 + Math.cos(rotation) * (obs.width / 2),
-                    obs.y + obs.height / 2 + Math.sin(rotation) * (obs.width / 2)
-                );
-                ctx.stroke();
-            }
+            // Animation
+            const rotation = (obs.x * 0.1) % (Math.PI * 2);
+            ctx.strokeStyle = 'black';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(obs.x + obs.width / 2, obs.y + obs.height / 2);
+            ctx.lineTo(
+                obs.x + obs.width / 2 + Math.cos(rotation) * (obs.width / 2),
+                obs.y + obs.height / 2 + Math.sin(rotation) * (obs.width / 2)
+            );
+            ctx.stroke();
         }
 
-        // Draw flying bot (simple drone-like circle with props)
+        // Draw flying bot
         function drawFlyingBot(bot) {
-            // Body
             ctx.fillStyle = 'red';
             ctx.beginPath();
             ctx.arc(bot.x + bot.width / 2, bot.y + bot.height / 2, bot.width / 2, 0, Math.PI * 2);
             ctx.fill();
-            // "Props" (lines)
+            // Props animation
+            const frame = Math.floor(Date.now() / 100 % 4);
             ctx.strokeStyle = 'black';
             ctx.lineWidth = 2;
             ctx.beginPath();
@@ -240,200 +321,223 @@
             }
         }
 
-        // Draw projectile (bullet)
+        // Draw projectile
         function drawProjectile(proj) {
             ctx.fillStyle = currentWeapon === 'rpg' ? 'orange' : (currentWeapon === 'god' ? 'gold' : 'yellow');
-            ctx.fillRect(proj.x, proj.y, proj.width, proj.height);
+            ctx.beginPath();
+            ctx.arc(proj.x + proj.width / 2, proj.y + proj.height / 2, proj.width / 2, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        // Draw particles
+        function drawParticles() {
+            particles.forEach((p, i) => {
+                ctx.fillStyle = p.color;
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+                ctx.fill();
+                p.x += p.vx;
+                p.y += p.vy;
+                p.life--;
+                if (p.life <= 0) particles.splice(i, 1);
+            });
+        }
+
+        // Create particles
+        function createParticles(x, y, color, count = 10) {
+            for (let i = 0; i < count; i++) {
+                particles.push({
+                    x,
+                    y,
+                    vx: Math.random() * 4 - 2,
+                    vy: Math.random() * 4 - 2,
+                    size: Math.random() * 5 + 2,
+                    life: Math.random() * 20 + 10,
+                    color
+                });
+            }
         }
 
         // Update ninja
-        function updateNinja() {
+        function updateNinja(dt) {
             // Horizontal movement
             ninja.dx = 0;
             if (keys['KeyA']) ninja.dx = -ninja.speed;
             if (keys['KeyD']) ninja.dx = ninja.speed;
-            ninja.x += ninja.dx;
+            ninja.x += ninja.dx * dt * 60; // Normalize to 60fps
+
+            // Dash
+            if (keys['Shift'] && ninja.dashCooldown <= 0) {
+                ninja.dx += (ninja.dx > 0 ? DASH_SPEED : -DASH_SPEED);
+                ninja.dashCooldown = 60; // 1s cooldown
+            }
+            if (ninja.dashCooldown > 0) ninja.dashCooldown--;
 
             // Boundaries
-            if (ninja.x < 0) ninja.x = 0;
-            if (ninja.x + ninja.width > canvas.width) ninja.x = canvas.width - ninja.width;
+            ninja.x = Math.max(0, Math.min(canvas.width - ninja.width, ninja.x));
 
-            // Jump (SPACE)
-            if (keys['Space'] && ninja.grounded) {
-                ninja.dy = ninja.jumpPower;
+            // Jump
+            if (keys['Space'] && (ninja.grounded || doubleJumpAvailable)) {
+                ninja.dy = JUMP_POWER;
+                if (!ninja.grounded) doubleJumpAvailable = false;
                 ninja.grounded = false;
+                jumpSound.play();
             }
 
             // Crouch
-            if (keys['KeyS']) {
-                ninja.crouching = true;
-            } else {
-                ninja.crouching = false;
-            }
+            ninja.crouching = !!keys['KeyS'];
 
-            // Gravity and vertical movement
-            ninja.dy += ninja.gravity;
+            // Gravity
+            ninja.dy += GRAVITY;
             ninja.y += ninja.dy;
 
-            if (ninja.y >= groundY - ninja.baseHeight) {
-                ninja.y = groundY - ninja.baseHeight;
+            if (ninja.y >= GROUND_Y - (ninja.crouching ? ninja.baseHeight / 2 : ninja.baseHeight)) {
+                ninja.y = GROUND_Y - (ninja.crouching ? ninja.baseHeight / 2 : ninja.baseHeight);
                 ninja.dy = 0;
                 ninja.grounded = true;
+                doubleJumpAvailable = true;
             }
 
             // Attack cooldown
-            if (ninja.attackCooldown > 0) {
-                ninja.attackCooldown--;
-                if (ninja.attackCooldown <= 0) {
-                    ninja.attacking = false;
-                }
-            }
+            if (ninja.attackCooldown > 0) ninja.attackCooldown--;
+            if (ninja.attackCooldown <= 0) ninja.attacking = false;
         }
 
-        // Update ground obstacles (balls that fly or roll)
-        function updateGroundObstacles() {
-            groundObstacleTimer++;
+        // Update obstacles
+        function updateGroundObstacles(dt) {
+            groundObstacleTimer += dt * 60;
             if (groundObstacleTimer > 200 / gameSpeed) {
-                const isFlying = Math.random() < 0.5; // 50% chance to fly
-                const obsY = isFlying ? groundY - 100 : groundY - 30; // Fly higher or roll low
+                const isFlying = Math.random() < 0.5;
+                const obsY = isFlying ? GROUND_Y - 100 - Math.random() * 50 : GROUND_Y - 30;
                 groundObstacles.push({
                     x: canvas.width,
                     y: obsY,
                     width: 30,
                     height: 30,
-                    isFlying: isFlying
+                    isFlying
                 });
                 groundObstacleTimer = 0;
             }
 
-            for (let i = groundObstacles.length - 1; i >= 0; i--) {
-                groundObstacles[i].x -= gameSpeed;
-                if (groundObstacles[i].x + groundObstacles[i].width < 0) {
-                    groundObstacles.splice(i, 1);
-                    // No score for passing ground obstacles
-                }
-            }
+            groundObstacles.forEach((obs, i) => {
+                obs.x -= gameSpeed * dt * 60;
+                if (obs.x + obs.width < 0) groundObstacles.splice(i, 1);
+            });
         }
 
-        // Update flying bots
-        function updateFlyingBots() {
-            botTimer++;
-            if (botTimer > 150 / gameSpeed) { // Spawn every ~150 frames, adjustable
-                const flyHeight = Math.random() * (groundY - 100) + 50; // Random height
+        // Update bots
+        function updateFlyingBots(dt) {
+            botTimer += dt * 60;
+            if (botTimer > 150 / gameSpeed) {
+                const flyHeight = Math.random() * (GROUND_Y - 100) + 50;
                 flyingBots.push({
                     x: canvas.width,
                     y: flyHeight - 20,
-                    width: 40, // Visual size unchanged
-                    height: 40, // Visual size unchanged
-                    speed: gameSpeed + 1, // Slightly faster than ground
-                    health: hasGod ? 1 : (currentWeapon === 'rpg' ? 1 : 1) // God one-shots
+                    width: 40,
+                    height: 40,
+                    speed: gameSpeed + 1 + Math.random(),
+                    health: 1
                 });
                 botTimer = 0;
             }
 
-            for (let i = flyingBots.length - 1; i >= 0; i--) {
-                flyingBots[i].x -= flyingBots[i].speed;
-                if (flyingBots[i].x + flyingBots[i].width < 0) {
-                    flyingBots.splice(i, 1);
-                    // No score for passing bots - only for kills
-                }
-            }
+            flyingBots.forEach((bot, i) => {
+                bot.x -= bot.speed * dt * 60;
+                // Simple sine wave movement for variety
+                bot.y += Math.sin(bot.x * 0.05) * 0.5;
+                if (bot.x + bot.width < 0) flyingBots.splice(i, 1);
+            });
         }
 
-        // Update projectiles (now with direction)
-        function updateProjectiles() {
-            for (let i = projectiles.length - 1; i >= 0; i--) {
-                const proj = projectiles[i];
-                proj.x += proj.vx;
-                proj.y += proj.vy;
+        // Update projectiles
+        function updateProjectiles(dt) {
+            projectiles.forEach((proj, i) => {
+                proj.x += proj.vx * dt * 60;
+                proj.y += proj.vy * dt * 60;
                 if (proj.x < 0 || proj.x > canvas.width || proj.y < 0 || proj.y > canvas.height) {
                     projectiles.splice(i, 1);
-                    continue;
+                    return;
                 }
-                // Check hits with larger kill box (add padding)
-                for (let j = flyingBots.length - 1; j >= 0; j--) {
-                    const bot = flyingBots[j];
-                    const padding = 20; // Larger kill box padding
-                    if (proj.x < bot.x + bot.width + padding &&
-                        proj.x + proj.width > bot.x - padding &&
-                        proj.y < bot.y + bot.height + padding &&
-                        proj.y + proj.height > bot.y - padding) {
-                        // Hit!
+                flyingBots.forEach((bot, j) => {
+                    if (proj.x < bot.x + bot.width &&
+                        proj.x + proj.width > bot.x &&
+                        proj.y < bot.y + bot.height &&
+                        proj.y + proj.height > bot.y) {
                         redKills++;
                         checkGodDrop();
+                        createParticles(bot.x + bot.width / 2, bot.y + bot.height / 2, 'red', 20);
+                        hitSound.play();
                         if (currentWeapon === 'rpg') {
-                            // Explode: Damage nearby bots
-                            for (let k = flyingBots.length - 1; k >= 0; k--) {
-                                const nearby = flyingBots[k];
-                                const dist = Math.sqrt(Math.pow(proj.x - nearby.x, 2) + Math.pow(proj.y - nearby.y, 2));
+                            explosionSound.play();
+                            createParticles(proj.x, proj.y, 'orange', 50);
+                            flyingBots.forEach((nearby, k) => {
+                                const dist = Math.hypot(proj.x - nearby.x, proj.y - nearby.y);
                                 if (dist < 60) {
                                     redKills++;
                                     checkGodDrop();
                                     flyingBots.splice(k, 1);
-                                    score += 300;
-                                    health = Math.min(health + 10, maxHealth); // Heal +10 on kill
+                                    score += KILL_SCORE;
+                                    health = Math.min(health + KILL_HEAL, maxHealth);
                                 }
-                            }
+                            });
                         } else {
                             flyingBots.splice(j, 1);
-                            score += 300;
-                            health = Math.min(health + 10, maxHealth); // Heal +10 on kill
+                            score += KILL_SCORE;
+                            health = Math.min(health + KILL_HEAL, maxHealth);
                         }
                         projectiles.splice(i, 1);
                         checkMilestones();
-                        break;
                     }
-                }
-            }
+                });
+            });
         }
 
-        // Passive score every 5 seconds
+        // Passive score
         function updatePassiveScore() {
             const currentTime = Date.now();
-            if (currentTime - lastScoreTime >= 5000) { // 5 seconds
-                score += 50;
+            if (currentTime - lastScoreTime >= PASSIVE_SCORE_INTERVAL) {
+                score += PASSIVE_SCORE_AMOUNT;
                 lastScoreTime = currentTime;
                 checkMilestones();
+                updateUI();
             }
         }
 
-        // Check score milestones
+        // Check milestones
         function checkMilestones() {
-            while (nextChestIndex < chestThresholds.length && score >= chestThresholds[nextChestIndex]) {
-                if (!chest) {
-                    spawnChest();
-                }
-                nextChestIndex++;
-            }
-            if (score >= 1000 && !hasPistol) {
+            if (score >= PISTOL_UNLOCK && !hasPistol) {
                 hasPistol = true;
-                currentWeapon = 'pistol';
-                alert('Unlocked Pistol!');
-            } else if (score >= 5000 && !hasRifle) {
-                hasRifle = true;
-                currentWeapon = 'rifle';
-                alert('Unlocked Rifle!');
-            } else if (score >= 10000 && !hasRPG) {
-                hasRPG = true;
-                currentWeapon = 'rpg';
-                alert('Unlocked RPG!');
-            } else if (score >= 30000 && !won) {
+                alert('Unlocked Pistol! Press 2 to switch.');
+            }
+            if (score >= LMG_UNLOCK && !hasLmg) {
+                hasLmg = true;
+                alert('Unlocked LMG! Press 3 to switch.');
+            }
+            if (score >= RPG_UNLOCK && !hasRpg) {
+                hasRpg = true;
+                alert('Unlocked RPG! Press 4 to switch.');
+            }
+            if (score >= NUKE_SCORE && !won) {
                 triggerNuke();
+            }
+            while (nextChestIndex < CHEST_THRESHOLDS.length && score >= CHEST_THRESHOLDS[nextChestIndex]) {
+                if (!chest) spawnChest();
+                nextChestIndex++;
             }
         }
 
         // Spawn chest
         function spawnChest() {
             chest = {
-                x: canvas.width / 2,
-                y: groundY - 40,
+                x: canvas.width / 2 + Math.random() * 200,
+                y: GROUND_Y - 40,
                 width: 40,
                 height: 40,
                 opened: false
             };
         }
 
-        // Open chest on collision
+        // Check chest collision
         function checkChest() {
             if (chest && !chest.opened) {
                 const currentHeight = ninja.crouching ? ninja.baseHeight / 2 : ninja.baseHeight;
@@ -442,177 +546,197 @@
                     ninja.y < chest.y + chest.height &&
                     ninja.y + currentHeight > chest.y) {
                     chest.opened = true;
+                    collectSound.play();
+                    createParticles(chest.x + chest.width / 2, chest.y + chest.height / 2, 'gold', 30);
                     const rand = Math.random();
-                    if (rand < 0.001) { // 0.1%
+                    if (rand < 0.001) {
                         infiniteHealth = true;
                         alert('Infinite Health Unlocked!');
-                    } else { // 99.9%
-                        armor += 10; // Increase armor
+                    } else if (rand < 0.1) {
+                        maxHealth += 50;
+                        health = maxHealth;
+                        alert('Max Health +50!');
+                    } else {
+                        armor += 10;
                         alert('Armor +10!');
                     }
-                    chest = null; // Disappear
+                    chest = null;
                 }
             }
         }
 
-        // Check for god drop on red kill
+        // Check god drop
         function checkGodDrop() {
-            if (!hasGod && Math.random() < 0.001) { // 0.1% chance
+            if (!hasGod && Math.random() < GOD_DROP_CHANCE) {
                 hasGod = true;
-                currentWeapon = 'god';
-                alert('Secret God Weapon Unlocked! Infinite Damage!');
+                alert('God Weapon Unlocked! Press 5 to switch.');
             }
         }
 
-        // Auto-fire for rifle
+        // Auto fire for LMG
         function autoFire() {
-            if (currentWeapon === 'rifle' && isMouseDown && ninja.attackCooldown <= 0 && gameRunning && !won) {
+            if (currentWeapon === 'lmg' && isMouseDown && ninja.attackCooldown <= 0 && gameRunning && !paused && !won) {
                 ninja.attacking = true;
-                shootProjectile(); // Direct shoot for rifle
-                ninja.attackCooldown = 5; // Faster fire rate for auto
-                checkMilestones(); // Check after potential score gain
+                shootProjectile();
+                attackSound.play();
+                ninja.attackCooldown = 5;
             }
         }
 
-        // Perform attack based on weapon
+        // Perform attack
         function performAttack() {
-            if (currentWeapon === 'katana') {
+            if (ninja.attackCooldown > 0) return;
+            attackSound.play();
+            ninja.attacking = true;
+            if (currentWeapon === 'katana' || currentWeapon === 'god') {
                 meleeAttack();
-                ninja.attackCooldown = 20; // Katana cooldown
+                ninja.attackCooldown = 20;
             } else if (currentWeapon === 'pistol' || currentWeapon === 'rpg') {
                 shootProjectile();
-                ninja.attackCooldown = 10; // Single-shot cooldown
+                ninja.attackCooldown = currentWeapon === 'rpg' ? 30 : 10;
             }
-            // Rifle handled in autoFire
         }
 
-        // Melee attack (katana or god)
+        // Melee attack
         function meleeAttack() {
-            const attackRange = hasGod ? 200 : 150; // God has bigger range
-            const verticalTolerance = hasGod ? 100 : 70;
-            for (let i = flyingBots.length - 1; i >= 0; i--) {
-                const bot = flyingBots[i];
+            const attackRange = currentWeapon === 'god' ? 200 : 150;
+            const verticalTolerance = currentWeapon === 'god' ? 100 : 70;
+            flyingBots.forEach((bot, i) => {
                 const distX = bot.x - (ninja.x + ninja.width);
                 const distY = Math.abs(bot.y - (ninja.y + 30));
                 if (distX > 0 && distX < attackRange && distY < verticalTolerance) {
                     redKills++;
                     checkGodDrop();
+                    createParticles(bot.x + bot.width / 2, bot.y + bot.height / 2, 'red', 20);
                     flyingBots.splice(i, 1);
-                    score += 300;
-                    health = Math.min(health + 10, maxHealth); // Heal +10 on kill
+                    score += KILL_SCORE;
+                    health = Math.min(health + KILL_HEAL, maxHealth);
                     checkMilestones();
-                    break;
                 }
-            }
-        }
-
-        // Shoot projectile towards mouse
-        function shootProjectile() {
-            const offsetY = ninja.crouching ? ninja.baseHeight / 4 : 0;
-            const gunX = ninja.x + 55; // Gun tip
-            const gunY = ninja.y + 27.5 + offsetY;
-
-            const dx = mouseX - gunX;
-            const dy = mouseY - gunY;
-            const distance = Math.sqrt(dx * dx + dy * dy);
-            const speed = currentWeapon === 'rpg' ? 8 : (hasGod ? 20 : 12);
-            const vx = (dx / distance) * speed;
-            const vy = (dy / distance) * speed;
-
-            const projWidth = currentWeapon === 'rpg' ? 10 : (hasGod ? 15 : 5);
-            const projHeight = currentWeapon === 'rpg' ? 10 : (hasGod ? 15 : 5);
-            projectiles.push({
-                x: gunX,
-                y: gunY,
-                width: projWidth,
-                height: projHeight,
-                vx: vx,
-                vy: vy
             });
         }
 
-        // Collision detection (ground obstacles and bots with player)
+        // Shoot projectile
+        function shootProjectile() {
+            const offsetY = ninja.crouching ? ninja.baseHeight / 4 : 0;
+            const gunX = ninja.x + 55;
+            const gunY = ninja.y + 27.5 + offsetY;
+            const dx = mouseX - gunX;
+            const dy = mouseY - gunY;
+            const distance = Math.hypot(dx, dy);
+            const speed = currentWeapon === 'rpg' ? 8 : (currentWeapon === 'god' ? 20 : 12);
+            const vx = (dx / distance) * speed;
+            const vy = (dy / distance) * speed;
+            const projSize = currentWeapon === 'rpg' ? 10 : (currentWeapon === 'god' ? 15 : 5);
+            projectiles.push({
+                x: gunX,
+                y: gunY,
+                width: projSize,
+                height: projSize,
+                vx,
+                vy
+            });
+        }
+
+        // Check collisions
         function checkCollisions() {
             const currentHeight = ninja.crouching ? ninja.baseHeight / 2 : ninja.baseHeight;
             const currentBottom = ninja.y + currentHeight;
 
-            // Ground obstacles
-            for (let i = groundObstacles.length - 1; i >= 0; i--) {
-                const obs = groundObstacles[i];
+            groundObstacles.forEach((obs, i) => {
                 if (ninja.x < obs.x + obs.width &&
                     ninja.x + ninja.width > obs.x &&
                     ninja.y < obs.y + obs.height &&
                     currentBottom > obs.y) {
-                    let damage = obs.isFlying ? 30 : 20; // Blue (flying): 30, Gray (rolling): 20
-                    damage = Math.max(0, damage - armor); // Armor reduces damage
+                    let damage = obs.isFlying ? 30 : 20;
+                    damage = Math.max(0, damage - armor);
                     if (!infiniteHealth) health -= damage;
-                    groundObstacles.splice(i, 1); // Remove on hit
-                    if (health <= 0 && !won) {
-                        endGame();
-                    }
+                    createParticles(obs.x + obs.width / 2, obs.y + obs.height / 2, obs.isFlying ? 'blue' : 'gray', 15);
+                    hitSound.play();
+                    groundObstacles.splice(i, 1);
+                    if (health <= 0 && !won) endGame();
                 }
-            }
-            // Flying bots
-            for (let i = flyingBots.length - 1; i >= 0; i--) {
-                const bot = flyingBots[i];
+            });
+
+            flyingBots.forEach((bot, i) => {
                 if (ninja.x < bot.x + bot.width &&
                     ninja.x + ninja.width > bot.x &&
                     ninja.y < bot.y + bot.height &&
                     currentBottom > bot.y) {
-                    let damage = 50; // Red: 50 dmg
-                    damage = Math.max(0, damage - armor); // Armor reduces damage
+                    let damage = 50;
+                    damage = Math.max(0, damage - armor);
                     if (!infiniteHealth) health -= damage;
-                    flyingBots.splice(i, 1); // Remove on hit
-                    if (health <= 0 && !won) {
-                        endGame();
-                    }
+                    createParticles(bot.x + bot.width / 2, bot.y + bot.height / 2, 'red', 20);
+                    hitSound.play();
+                    flyingBots.splice(i, 1);
+                    if (health <= 0 && !won) endGame();
                 }
-            }
+            });
         }
 
-        // Trigger nuke win
+        // Trigger nuke
         function triggerNuke() {
             won = true;
             gameRunning = false;
-            // Simple explosion effect: flash screen
-            ctx.fillStyle = 'red';
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            explosionSound.play();
+            createParticles(canvas.width / 2, canvas.height / 2, 'orange', 200);
             setTimeout(() => {
-                ctx.fillStyle = 'white';
+                ctx.fillStyle = 'red';
                 ctx.fillRect(0, 0, canvas.width, canvas.height);
                 setTimeout(() => {
-                    winScreen.style.display = 'block';
-                    finalScoreElement.textContent = Math.floor(score);
-                }, 500);
-            }, 1000);
+                    ctx.fillStyle = 'white';
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                    setTimeout(() => {
+                        winScreen.style.display = 'block';
+                        finalScoreElement.textContent = Math.floor(score);
+                    }, 500);
+                }, 1000);
+            }, 500);
         }
 
+        // End game
         function endGame() {
             gameRunning = false;
-            alert(`Game Over! Final Score: ${score}`);
-            location.reload(); // Restart
+            alert(`Game Over! Final Score: ${Math.floor(score)}`);
+            location.reload();
         }
 
         // Draw ground
         function drawGround() {
             ctx.fillStyle = 'brown';
-            ctx.fillRect(0, groundY, canvas.width, canvas.height - groundY);
+            ctx.fillRect(0, GROUND_Y, canvas.width, canvas.height - GROUND_Y);
+        }
+
+        // Update UI
+        function updateUI() {
+            scoreElement.textContent = `Score: ${Math.floor(score)}`;
+            healthElement.textContent = `Health: ${Math.floor(health)}/${maxHealth}`;
+            weaponElement.textContent = `Weapon: ${currentWeapon.toUpperCase()}`;
+            armorElement.textContent = `Armor: ${armor}`;
         }
 
         // Game loop
-        function gameLoop() {
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
+        let lastTime = 0;
+        function gameLoop(timestamp) {
+            if (!lastTime) lastTime = timestamp;
+            const dt = (timestamp - lastTime) / 1000;
+            lastTime = timestamp;
 
-            if (gameRunning && !won) {
-                updateNinja();
-                updateGroundObstacles();
-                updateFlyingBots();
-                updateProjectiles();
+            if (gameRunning && !paused && !won) {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                drawParallax();
+                updateNinja(dt);
+                updateGroundObstacles(dt);
+                updateFlyingBots(dt);
+                updateProjectiles(dt);
                 updatePassiveScore();
                 checkMilestones();
                 checkCollisions();
                 checkChest();
-                autoFire(); // Check for auto-fire
+                autoFire();
+                if (isMouseDown && ninja.attackCooldown <= 0 && currentWeapon !== 'lmg') {
+                    performAttack();
+                }
 
                 drawGround();
                 drawNinja();
@@ -620,18 +744,20 @@
                 flyingBots.forEach(drawFlyingBot);
                 drawChest();
                 projectiles.forEach(drawProjectile);
+                drawParticles();
 
-                gameSpeed += 0.001; // Gradually increase difficulty
+                gameSpeed += 0.001 * dt * 60; // Gradual increase
             }
 
-            scoreElement.textContent = `Score: ${Math.floor(score)}`;
-            healthElement.textContent = `Health: ${Math.floor(health)}/100`;
-            weaponElement.textContent = `Weapon: ${currentWeapon.charAt(0).toUpperCase() + currentWeapon.slice(1)}`;
-            armorElement.textContent = `Armor: ${armor}`;
-
+            updateUI();
             requestAnimationFrame(gameLoop);
         }
 
+        // Ninja dash cooldown
+        ninja.dashCooldown = 0;
+        ninja.baseHeight = 60;
+
+        // Start loop
         gameLoop();
     </script>
 </body>
